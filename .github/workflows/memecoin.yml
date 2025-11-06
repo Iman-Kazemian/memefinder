@@ -44,7 +44,6 @@ jobs:
           mkdir -p runs
           python memecoin_previral.py \
             --chains "solana,base" \
-            --meme-only \
             --top 25 \
             --age-min 1 --age-max 48 \
             --min-liquidity 8000 --max-liquidity 120000 \
