@@ -1,0 +1,62 @@
+name: Memecoin Pre-Viral Scanner
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"   # runs every 15 minutes (UTC)
+  workflow_dispatch: {}       # allow manual run
+
+permissions:
+  contents: read
+
+concurrency:
+  group: memecoin-previral
+  cancel-in-progress: true
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+
+    env:
+   
+      # Adjust defaults here if you prefer env-based configuration:
+      CHAINS: "solana,base,bsc"
+      ONLY_QUOTES: "USDC,SOL,WETH,USDT,USD1"
+      TOP: "20"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run scanner
+        run: |
+          TS=$(date -u +"%Y%m%d_%H%M%S")
+          mkdir -p runs
+          # Run with flags you like (tweak freely)
+          python memecoin_previral.py \
+            --chains "${CHAINS}" \
+            --top "${TOP}" \
+            --age-min 2 --age-max 120 \
+            --min-liquidity 30000 --max-liquidity 300000 \
+            --abs-vol24-floor 30000 --min-turnover-ratio 0.003 \
+            --min-buys5m 0.60 --min-txns1h 20 --min-txns5m 2 \
+            --only-quotes "${ONLY_QUOTES}" \
+            --debug \
+            | tee "runs/scan_${TS}.log"
+
+      - name: Upload logs
+        uses: actions/upload-artifact@v4
+        with:
+          name: memecoin-scans
+          path: runs/
+          retention-days: 14
