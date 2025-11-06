@@ -2,8 +2,8 @@ name: Memecoin Pre-Viral Scanner
 
 on:
   schedule:
-    - cron: "*/15 * * * *"   # runs every 15 minutes (UTC)
-  workflow_dispatch: {}       # allow manual run
+    - cron: "*/15 * * * *"
+  workflow_dispatch: {}
 
 permissions:
   contents: read
@@ -15,49 +15,65 @@ concurrency:
 jobs:
   scan:
     runs-on: ubuntu-latest
-
     env:
-   
-      # Adjust defaults here if you prefer env-based configuration:
-      CHAINS: "solana"
-      ONLY_QUOTES: "USDC,SOL,WETH,USDT,USD1"
+      CHAINS: "solana,base,bsc"
       TOP: "20"
+      ONLY_QUOTES: "USDC,SOL,WETH,USDT,USD1"
+      AGE_MIN: "2"
+      AGE_MAX: "120"
+      MIN_LIQ: "30000"
+      MAX_LIQ: "300000"
+      ABS_VOL24: "30000"
+      MIN_TURNOVER: "0.003"
+      MIN_BUYS5M: "0.60"
+      MIN_TXNS1H: "20"
+      MIN_TXNS5M: "2"
+      MEME_ONLY: "true"
+      ALERT_THRESHOLD: "0.45"
+      ALERT_ACCEL: "1.2"
+      ALERT_BUYS: "0.6"
+      COOLDOWN_HOURS: "6"
+      DEBUG: "false"
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: "pip"
-
-      - name: Install dependencies
+      - name: Install deps
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-
-      - name: Run scanner
+      - name: Run scanner & persist
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+          BIRDEYE_API_KEY:    ${{ secrets.BIRDEYE_API_KEY }}
         run: |
+          set -e
           TS=$(date -u +"%Y%m%d_%H%M%S")
-          mkdir -p runs
+          mkdir -p runs data
           python memecoin_previral.py \
-            --chains "solana,base" \
-            --top 25 \
-            --age-min 1 --age-max 48 \
-            --min-liquidity 8000 --max-liquidity 120000 \
-            --min-vol24 10000 --abs-vol24-floor 10000 \
-            --min-turnover-ratio 0.015 \
-            --min-buys5m 0.65 --min-txns1h 12 --min-txns5m 3 \
-            --min-accel 1.5 \
-            --only-quotes "SOL,USDC,USDT" \
-            --debug | tee "runs/scan_${TS}.log"
-
-
-      - name: Upload logs
+            --chains "${CHAINS}" \
+            --top "${TOP}" \
+            $([ "${MEME_ONLY}" = "true" ] && echo "--meme-only" || true) \
+            --age-min "${AGE_MIN}" --age-max "${AGE_MAX}" \
+            --min-liquidity "${MIN_LIQ}" --max-liquidity "${MAX_LIQ}" \
+            --abs-vol24-floor "${ABS_VOL24}" --min-turnover-ratio "${MIN_TURNOVER}" \
+            --min-buys5m "${MIN_BUYS5M}" --min-txns1h "${MIN_TXNS1H}" --min-txns5m "${MIN_TXNS5M}" \
+            --only-quotes "${ONLY_QUOTES}" \
+            --alert-threshold "${ALERT_THRESHOLD}" \
+            --alert-accel "${ALERT_ACCEL}" \
+            --alert-buys "${ALERT_BUYS}" \
+            --cooldown-hours "${COOLDOWN_HOURS}" \
+            ${BIRDEYE_API_KEY:+--birdeye-key "${BIRDEYE_API_KEY}"} \
+            $([ "${DEBUG}" = "true" ] && echo "--debug" || true) \
+          | tee "runs/scan_${TS}.log"
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: memecoin-scans
-          path: runs/
-          retention-days: 14
+          name: memecoin-scanner-${{ github.run_number }}
+          path: |
+            runs/
+            data/*.csv
