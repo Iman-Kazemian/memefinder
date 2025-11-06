@@ -19,7 +19,7 @@ jobs:
     env:
    
       # Adjust defaults here if you prefer env-based configuration:
-      CHAINS: "solana,base,bsc"
+      CHAINS: "solana"
       ONLY_QUOTES: "USDC,SOL,WETH,USDT,USD1"
       TOP: "20"
 
