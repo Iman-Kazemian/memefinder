@@ -28,7 +28,7 @@ jobs:
       MIN_BUYS5M: "0.60"
       MIN_TXNS1H: "20"
       MIN_TXNS5M: "2"
-      MEME_ONLY: "true"
+      MEME_ONLY: "false"
       ALERT_THRESHOLD: "0.45"
       ALERT_ACCEL: "1.2"
       ALERT_BUYS: "0.6"
