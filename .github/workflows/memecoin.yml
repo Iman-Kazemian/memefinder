@@ -42,17 +42,19 @@ jobs:
         run: |
           TS=$(date -u +"%Y%m%d_%H%M%S")
           mkdir -p runs
-          # Run with flags you like (tweak freely)
           python memecoin_previral.py \
-            --chains "${CHAINS}" \
-            --top "${TOP}" \
-            --age-min 2 --age-max 120 \
-            --min-liquidity 30000 --max-liquidity 300000 \
-            --abs-vol24-floor 30000 --min-turnover-ratio 0.003 \
-            --min-buys5m 0.60 --min-txns1h 20 --min-txns5m 2 \
-            --only-quotes "${ONLY_QUOTES}" \
-            --debug \
-            | tee "runs/scan_${TS}.log"
+            --chains "solana,base" \
+            --meme-only \
+            --top 25 \
+            --age-min 1 --age-max 48 \
+            --min-liquidity 8000 --max-liquidity 120000 \
+            --min-vol24 10000 --abs-vol24-floor 10000 \
+            --min-turnover-ratio 0.015 \
+            --min-buys5m 0.65 --min-txns1h 12 --min-txns5m 3 \
+            --min-accel 1.5 \
+            --only-quotes "SOL,USDC,USDT" \
+            --debug | tee "runs/scan_${TS}.log"
+
 
       - name: Upload logs
         uses: actions/upload-artifact@v4
