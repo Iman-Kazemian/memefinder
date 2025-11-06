@@ -494,6 +494,24 @@ def parse_args():
 def main():
     args = parse_args()
     run_once(args)
+import os
 
+DATA_DIR = "data"
+os.makedirs(DATA_DIR, exist_ok=True)
+
+def save_discoveries(df):
+    """Append new discoveries to data/discoveries.csv"""
+    if df is None or df.empty:
+        return
+    path = os.path.join(DATA_DIR, "discoveries.csv")
+    df_small = df[["chain","dex","base_symbol","quote_symbol","pair_address","ViralScore","liq_usd","vol24_usd","age_hours"]].copy()
+    df_small["ts_utc"] = pd.Timestamp.utcnow()
+    if os.path.exists(path):
+        df_small.to_csv(path, mode="a", header=False, index=False)
+    else:
+        df_small.to_csv(path, mode="w", header=True, index=False)
+
+# After filtering + printing + Telegram alert
+save_discoveries(df.head(args.top))
 if __name__ == "__main__":
     main()
