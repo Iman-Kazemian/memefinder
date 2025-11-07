@@ -2,11 +2,12 @@ name: Memecoin Pre-Viral Scanner
 
 on:
   schedule:
-    - cron: "*/15 * * * *"   # runs every 15 minutes (UTC)
-  workflow_dispatch: {}       # allow manual run
+    - cron: "*/5 * * * *"   # run every 5 minutes (UTC)
+  workflow_dispatch: {}
 
 permissions:
-  contents: read
+  contents: write   # needed to commit the cooldown cache
+  actions: read
 
 concurrency:
   group: memecoin-previral
@@ -15,17 +16,25 @@ concurrency:
 jobs:
   scan:
     runs-on: ubuntu-latest
-
     env:
-   
-      # Adjust defaults here if you prefer env-based configuration:
-      CHAINS: "solana"
+      CHAINS: "solana,base"
       ONLY_QUOTES: "USDC,SOL,WETH,USDT,USD1"
       TOP: "20"
+      # Secrets are set in repo settings → Actions → Secrets and variables → Actions
+      TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+      TELEGRAM_CHAT:  ${{ secrets.TELEGRAM_CHAT }}
+      BIRDEYE_API_KEY: ${{ secrets.BIRDEYE_API_KEY }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Git identity
+        run: |
+          git config user.name "previral-bot"
+          git config user.email "previral-bot@users.noreply.github.com"
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -36,23 +45,32 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install requests pandas numpy
 
       - name: Run scanner
         run: |
           TS=$(date -u +"%Y%m%d_%H%M%S")
-          mkdir -p runs
-          # Run with flags you like (tweak freely)
+          mkdir -p runs .state
           python memecoin_previral.py \
             --chains "${CHAINS}" \
             --top "${TOP}" \
-            --age-min 2 --age-max 120 \
-            --min-liquidity 30000 --max-liquidity 300000 \
-            --abs-vol24-floor 30000 --min-turnover-ratio 0.003 \
-            --min-buys5m 0.60 --min-txns1h 20 --min-txns5m 2 \
+            --early-mode \
+            --meme-only \
+            --age-min 0 --age-max 1 \
+            --min-liquidity 15000 --max-liquidity 120000 \
+            --abs-vol24-floor 15000 --min-turnover-ratio 0.01 \
+            --min-buys5m 0.65 --min-txns1h 10 --min-txns5m 3 \
             --only-quotes "${ONLY_QUOTES}" \
-            --debug \
-            | tee "runs/scan_${TS}.log"
+            --exclude-dex "pumpswap" \
+            --debug | tee "runs/scan_${TS}.log"
+
+      - name: Commit cooldown cache
+        run: |
+          if [ -n "$(git status --porcelain .state/alert_cache.json 2>/dev/null)" ]; then
+            git add .state/alert_cache.json
+            git commit -m "chore: update alert cooldown cache"
+            git push
+          fi
 
       - name: Upload logs
         uses: actions/upload-artifact@v4
