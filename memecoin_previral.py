@@ -4,14 +4,14 @@
 memecoin_previral.py
 Find < 1h, liquid, momentum-leaning meme coins and push alerts to Telegram.
 
-Key upgrades vs earlier version:
-- Earlier seeds: Dexscreener latest token boosts/profiles (+ optional Birdeye).
-- Early mode: strict age gates (<= 60 min), tighter flow thresholds.
-- Score favors fresh flow (5m buy-imbalance + accel + turnover) with soft saturation.
-- Dedupe: one symbol per chain (keep most-liquid pool).
-- Durable cooldown across runs (writes .state/alert_cache.json).
+Key features:
+- Earlier seeds: Dexscreener token-boosts latest/top + token-profiles latest (+ optional Birdeye).
+- Early mode: strict age window (<= 60 min) but DOES NOT drop rows with unknown age.
+- Fresh-flow score: buy-imbalance (5m), acceleration, turnover, light price change.
+- Dedupe: one symbol per chain (most-liquid pool).
+- Durable cooldown across runs (.state/alert_cache.json).
 - Re-alert only on improvement (ViralScore+ or big vol24 jump).
-- Secrets via env (no hardcoded Telegram token/chat).
+- Secrets via env (TELEGRAM_TOKEN, TELEGRAM_CHAT, BIRDEYE_API_KEY).
 """
 
 import os
@@ -20,7 +20,7 @@ import json
 import time
 import math
 import argparse
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Callable, Any
 
 import requests
 import pandas as pd
@@ -29,7 +29,7 @@ import numpy as np
 # ------------------------------- utils -------------------------------- #
 
 SESSION = requests.Session()
-SESSION.headers.update({"User-Agent": "memecoin-previral/2.0"})
+SESSION.headers.update({"User-Agent": "memecoin-previral/2.1"})
 
 def http_get(url: str, params: dict = None, headers: dict = None, timeout: int = 20):
     try:
@@ -108,20 +108,45 @@ def fetch_dexscreener_token_profiles_latest(limit: int = 200) -> List[str]:
             sym = (p.get("symbol") or "").upper()
             if sym:
                 out.append(sym)
+    elif isinstance(js, list):
+        # rare shape safety
+        for p in js[:limit]:
+            if isinstance(p, dict):
+                sym = (p.get("symbol") or "").upper()
+                if sym:
+                    out.append(sym)
     return list(dict.fromkeys(out))
 
-def fetch_dexscreener_token_boosts_latest(limit: int = 200) -> List[str]:
-    """Tokens currently being boosted; often just-launched."""
-    print("[*] Seeds: Dexscreener token-boosts latest…")
-    url = "https://api.dexscreener.com/token-boosts/latest/v1"
-    js = http_get(url)
+def fetch_dexscreener_token_boosts_symbols() -> List[dict]:
+    """
+    Fetch latest/top token boosts for early activity.
+    Returns a list of dicts with {chainId, tokenAddress, symbol, boosts}.
+    Handles both list and dict response shapes.
+    """
+    print("[*] Seeds: Dexscreener token-boosts latest/top…")
+    urls = [
+        "https://api.dexscreener.com/token-boosts/latest/v1",
+        "https://api.dexscreener.com/token-boosts/top/v1",
+    ]
+    tokens = []
+    for url in urls:
+        js = http_get(url) or []
+        if isinstance(js, dict):
+            tokens.extend(js.get("tokens") or [])
+        elif isinstance(js, list):
+            tokens.extend(js)
+    # normalize fields
     out = []
-    if isinstance(js, dict) and isinstance(js.get("tokens"), list):
-        for t in js["tokens"][:limit]:
-            sym = (t.get("symbol") or "").upper()
-            if sym:
-                out.append(sym)
-    return list(dict.fromkeys(out))
+    for t in tokens:
+        if not isinstance(t, dict):
+            continue
+        out.append({
+            "chainId": (t.get("chainId") or "").lower(),
+            "tokenAddress": (t.get("tokenAddress") or "").lower(),
+            "symbol": (t.get("symbol") or "").upper(),
+            "boosts": int(t.get("boosts") or t.get("boostCount") or t.get("count") or 0),
+        })
+    return out
 
 # ------------------------ dex expansion & boosts ----------------------- #
 
@@ -134,33 +159,35 @@ def dexscreener_search_pairs_by_symbol(symbol: str, limit_per_symbol: int = 50) 
     pairs = js.get("pairs") or []
     return pairs[:limit_per_symbol]
 
-def fetch_dexscreener_boosts_map() -> Dict[str, int]:
+def fetch_dexscreener_boosts_map() -> Callable[[pd.Series], int]:
     """
-    Use the new token-boosts endpoint. We key by base token address when available
-    and fall back to (chain,symbol) for scoring.
+    Build a lookup for 'boosts' using Dexscreener token-boosts endpoints.
+    Returns a callable(row) -> int mapping by (chain, base_address) with (chain, symbol) fallback.
     """
-    print("[*] Fetching boosts (latest tokens)…")
-    url = "https://api.dexscreener.com/token-boosts/latest/v1"
-    js = http_get(url) or {}
-    boosts_by_token = {}
-    # response shape: {"tokens":[{"chainId":"solana","tokenAddress":"...","symbol":"XYZ","boosts":N}, ...]}
-    for t in (js.get("tokens") or []):
-        chain = (t.get("chainId") or "").lower()
-        addr  = (t.get("tokenAddress") or "").lower()
-        sym   = (t.get("symbol") or "").upper()
-        cnt   = t.get("boosts") or t.get("boostCount") or t.get("count") or 0
+    tokens = fetch_dexscreener_token_boosts_symbols()
+    boosts_by_token: Dict[Any, int] = {}
+
+    for t in tokens:
+        chain = t["chainId"]
+        addr  = t["tokenAddress"]
+        sym   = t["symbol"]
+        cnt   = t["boosts"]
         if addr:
-            boosts_by_token[(chain, addr)] = int(cnt)
-        elif sym:
-            boosts_by_token[(chain, sym)] = int(cnt)
+            boosts_by_token[(chain, addr)] = max(cnt, boosts_by_token.get((chain, addr), 0))
+        if sym:
+            boosts_by_token[(chain, sym)]  = max(cnt, boosts_by_token.get((chain, sym), 0))
 
-    # adapter that maps a row to its boost
-    def _boost_lookup(row):
-        k1 = (str(row.get("chain","")).lower(), str(row.get("base_address","") or "").lower())
-        k2 = (str(row.get("chain","")).lower(), str(row.get("base_symbol","") or "").upper())
-        return boosts_by_token.get(k1, boosts_by_token.get(k2, 0))
-    return _boost_lookup
+    def _lookup(row: pd.Series) -> int:
+        chain = str(row.get("chain","")).lower()
+        addr  = str(row.get("base_address","") or "").lower()
+        sym   = str(row.get("base_symbol","") or "").upper()
+        if (chain, addr) in boosts_by_token:
+            return boosts_by_token[(chain, addr)]
+        if (chain, sym) in boosts_by_token:
+            return boosts_by_token[(chain, sym)]
+        return 0
 
+    return _lookup
 
 # --------------------------- parsing helpers --------------------------- #
 
@@ -219,14 +246,14 @@ def normalize_pair(p: dict) -> Optional[dict]:
 
 # --------------------------- scoring logic ----------------------------- #
 
-def compute_viral_score(df: pd.DataFrame, boosts_map: Dict[str, int]) -> pd.DataFrame:
+def compute_viral_score(df: pd.DataFrame, boosts_lookup: Callable[[pd.Series], int]) -> pd.DataFrame:
     """Combine normalized features into a fresh-heat 'ViralScore'."""
     if df.empty:
         return df
     df = df.copy()
 
-    # attach boosts
-    lookup = boosts_map if callable(boosts_map) else (lambda _row: 0)
+    # attach boosts via row-wise lookup
+    lookup = boosts_lookup if callable(boosts_lookup) else (lambda _row: 0)
     df["boosts"] = df.apply(lookup, axis=1)
 
     # features
@@ -343,7 +370,7 @@ def apply_quality_gates(
         x = x[x["turnover_ratio"] >= float(min_turnover)]
     audit(x, "after turnover", debug)
 
-    # age
+    # age (NOTE: NaN ages PASS here by design, so early-mode doesn't auto-drop missing ages)
     if age_min is not None:
         x = x[(x["age_hours"].isna()) | (x["age_hours"] >= float(age_min))]
     if age_max is not None:
@@ -421,11 +448,17 @@ def save_cache(cache, path=CACHE_FILE):
 
 def seed_symbols(args) -> List[str]:
     seeds = []
-    # prioritize the freshest
-    seeds += fetch_dexscreener_token_boosts_latest(limit=min(200, args.seed_boosts_limit))
+
+    # Prioritize the freshest
+    boosted = fetch_dexscreener_token_boosts_symbols()
+    # Use their symbols directly as seeds
+    seeds += [t["symbol"] for t in boosted if t.get("symbol")]
+
     seeds += fetch_dexscreener_token_profiles_latest(limit=min(200, args.seed_boosts_limit))
+
     if args.birdeye_key:
         seeds += fetch_birdeye_solana_trending(args.birdeye_key, limit=min(100, args.seed_boosts_limit))
+
     # Coingecko last (laggier)
     seeds += fetch_coingecko_trending_public()
     seeds = [s for s in seeds if s]
@@ -468,12 +501,14 @@ def run_once(args):
     if args.debug:
         print(f"[debug] seeds->pairs (raw): {len(df)} rows")
 
-    boosts_map = fetch_dexscreener_boosts_map()
-    df = compute_viral_score(df, boosts_map)
+    # boosts lookup (robust)
+    try:
+        boosts_lookup = fetch_dexscreener_boosts_map()
+    except Exception as e:
+        print(f"[warn] boosts fetch failed: {e}")
+        boosts_lookup = lambda _row: 0
 
-    # Early-mode requires age info
-    if args.early_mode:
-        df = df[pd.notnull(df["age_hours"])].copy()
+    df = compute_viral_score(df, boosts_lookup)
 
     # Dedupe: keep most-liquid pool per (chain, base_symbol)
     if not df.empty:
@@ -512,7 +547,7 @@ def run_once(args):
         debug=args.debug
     )
 
-    # Sort
+    # Sort & print
     if df is None or df.empty:
         if args.debug:
             print("[debug] after gates: 0 rows")
@@ -524,7 +559,6 @@ def run_once(args):
     if args.debug:
         print(f"[debug] after gates: {len(df)} rows")
 
-    # Pretty print small table
     show_cols = [
         "ViralScore","chain","dex","base_symbol","quote_symbol",
         "liq_usd","vol24_usd","txns5m","txns1h","buy_ratio_5m","accel",
@@ -560,7 +594,6 @@ def run_once(args):
         ].copy()
 
         if not alerts.empty:
-            # cooldown & improvement guard
             alerts["__id"] = alerts[["chain","pair_address"]].astype(str).agg("|".join, axis=1)
             cache = load_cache()
             cutoff = now_ts() - int(args.cooldown_hours*3600)
