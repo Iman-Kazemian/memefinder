@@ -55,7 +55,6 @@ jobs:
             --chains "${CHAINS}" \
             --top "${TOP}" \
             --early-mode \
-            --meme-only \
             --age-min 0 --age-max 1 \
             --min-liquidity 15000 --max-liquidity 120000 \
             --abs-vol24-floor 15000 --min-turnover-ratio 0.01 \
