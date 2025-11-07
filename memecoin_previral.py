@@ -135,18 +135,32 @@ def dexscreener_search_pairs_by_symbol(symbol: str, limit_per_symbol: int = 50) 
     return pairs[:limit_per_symbol]
 
 def fetch_dexscreener_boosts_map() -> Dict[str, int]:
-    """Fetch boosts info from Dexscreener and return a map pairAddress -> boostsCount."""
-    print("[*] Fetching boosts map…")
-    url = "https://api.dexscreener.com/latest/dex/boosts"
-    js = http_get(url)
-    boosts_map = {}
-    if js and isinstance(js.get("boosts"), list):
-        for b in js["boosts"]:
-            pa = b.get("pairAddress")
-            cnt = b.get("boosts") or b.get("boostCount") or b.get("count")
-            if pa and isinstance(cnt, (int, float)):
-                boosts_map[pa] = int(cnt)
-    return boosts_map
+    """
+    Use the new token-boosts endpoint. We key by base token address when available
+    and fall back to (chain,symbol) for scoring.
+    """
+    print("[*] Fetching boosts (latest tokens)…")
+    url = "https://api.dexscreener.com/token-boosts/latest/v1"
+    js = http_get(url) or {}
+    boosts_by_token = {}
+    # response shape: {"tokens":[{"chainId":"solana","tokenAddress":"...","symbol":"XYZ","boosts":N}, ...]}
+    for t in (js.get("tokens") or []):
+        chain = (t.get("chainId") or "").lower()
+        addr  = (t.get("tokenAddress") or "").lower()
+        sym   = (t.get("symbol") or "").upper()
+        cnt   = t.get("boosts") or t.get("boostCount") or t.get("count") or 0
+        if addr:
+            boosts_by_token[(chain, addr)] = int(cnt)
+        elif sym:
+            boosts_by_token[(chain, sym)] = int(cnt)
+
+    # adapter that maps a row to its boost
+    def _boost_lookup(row):
+        k1 = (str(row.get("chain","")).lower(), str(row.get("base_address","") or "").lower())
+        k2 = (str(row.get("chain","")).lower(), str(row.get("base_symbol","") or "").upper())
+        return boosts_by_token.get(k1, boosts_by_token.get(k2, 0))
+    return _boost_lookup
+
 
 # --------------------------- parsing helpers --------------------------- #
 
@@ -212,7 +226,8 @@ def compute_viral_score(df: pd.DataFrame, boosts_map: Dict[str, int]) -> pd.Data
     df = df.copy()
 
     # attach boosts
-    df["boosts"] = df["pair_address"].map(lambda x: boosts_map.get(str(x), 0))
+    lookup = boosts_map if callable(boosts_map) else (lambda _row: 0)
+    df["boosts"] = df.apply(lookup, axis=1)
 
     # features
     df["accel"] = (df["txns1h"].fillna(0.0) / (df["txns5m"].fillna(0.0).clip(lower=1.0))).clip(upper=12.0)
