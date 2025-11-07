@@ -19,7 +19,7 @@ jobs:
     env:
       CHAINS: "solana,base"
       ONLY_QUOTES: "USDC,SOL,WETH,USDT,USD1"
-      TOP: "20"
+      TOP: "100"
       # Secrets are set in repo settings → Actions → Secrets and variables → Actions
       TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
       TELEGRAM_CHAT:  ${{ secrets.TELEGRAM_CHAT }}
@@ -55,9 +55,9 @@ jobs:
             --chains "${CHAINS}" \
             --top "${TOP}" \
             --early-mode \
-            --age-min 0 --age-max 1 \
-            --min-liquidity 15000 --max-liquidity 120000 \
-            --abs-vol24-floor 15000 --min-turnover-ratio 0.01 \
+            --age-min 0 --age-max 3 \
+            --min-liquidity 12000 --max-liquidity 120000 \
+            --abs-vol24-floor 5000 --min-turnover-ratio 0.02 \
             --min-buys5m 0.65 --min-txns1h 10 --min-txns5m 3 \
             --only-quotes "${ONLY_QUOTES}" \
             --exclude-dex "pumpswap" \
