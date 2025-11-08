@@ -55,13 +55,15 @@ jobs:
             --chains "${CHAINS}" \
             --top "${TOP}" \
             --early-mode \
-            --age-min 0 --age-max 3 \
-            --min-liquidity 12000 --max-liquidity 120000 \
-            --abs-vol24-floor 5000 --min-turnover-ratio 0.02 \
-            --min-buys5m 0.65 --min-txns1h 10 --min-txns5m 3 \
+            --age-min 0 --age-max 2 \
+            --min-liquidity 12000 --max-liquidity 150000 \
+            --abs-vol24-floor 0 --min-vol24 0 \        # ← drop 24h volume floors
+            --min-turnover-ratio 0.012 \               # keep quality via turnover
+            --min-buys5m 0.62 --min-txns1h 8 --min-txns5m 2 \
             --only-quotes "${ONLY_QUOTES}" \
             --exclude-dex "pumpswap" \
-            --debug | tee "runs/scan_${TS}.log"
+            --debug
+
 
       - name: Commit cooldown cache
         run: |
