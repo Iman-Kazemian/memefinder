@@ -18,7 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       CHAINS: "solana,base"
-      ONLY_QUOTES: "USDC,SOL,WETH,USDT,USD1"
+      ONLY_QUOTES: "USDC,SOL,WETH,USDT,USD1,VIRTUAL"
       TOP: "100"
       # Secrets are set in repo settings → Actions → Secrets and variables → Actions
       TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
