@@ -6,6 +6,7 @@ Find < 1h, liquid, momentum-leaning meme coins and push alerts to Telegram.
 
 Key features:
 - Earlier seeds: Dexscreener token-boosts latest/top + token-profiles latest (+ optional Birdeye).
+- Direct newborn pools: pull pools by boosted token addresses (no text-search lag).
 - Early mode: strict age window (<= 60 min) but DOES NOT drop rows with unknown age.
 - Fresh-flow score: buy-imbalance (5m), acceleration, turnover, light price change.
 - Dedupe: one symbol per chain (most-liquid pool).
@@ -29,7 +30,7 @@ import numpy as np
 # ------------------------------- utils -------------------------------- #
 
 SESSION = requests.Session()
-SESSION.headers.update({"User-Agent": "memecoin-previral/2.1"})
+SESSION.headers.update({"User-Agent": "memecoin-previral/2.2"})
 
 def http_get(url: str, params: dict = None, headers: dict = None, timeout: int = 20):
     try:
@@ -60,7 +61,6 @@ def now_ts():
     return int(time.time())
 
 def soft01(x, k=1.0):
-    # smooth 0..1 saturation for non-negative inputs
     x = np.clip(np.array(x, dtype=float), 0, None)
     return 1.0 - np.exp(-k * x)
 
@@ -146,6 +146,48 @@ def fetch_dexscreener_token_boosts_symbols() -> List[dict]:
             "symbol": (t.get("symbol") or "").upper(),
             "boosts": int(t.get("boosts") or t.get("boostCount") or t.get("count") or 0),
         })
+    return out
+
+# --------------------- direct pools for boosted tokens ----------------- #
+
+def dexscreener_token_pairs_by_addresses(chain: str, token_addrs: List[str]) -> List[dict]:
+    """
+    Use Dexscreener token->pools endpoints to get newborn pools without search lag.
+    Primary: /tokens/v1/{chain}/{addr1,addr2,...} (batch, <=30 per call)
+    Fallback: same response also supports single addresses; we chunk anyway.
+    """
+    out = []
+    addrs = [a.strip() for a in token_addrs if a and a.strip()]
+    if not addrs:
+        return out
+
+    for i in range(0, len(addrs), 30):
+        chunk = ",".join(addrs[i:i+30])
+        url = f"https://api.dexscreener.com/tokens/v1/{chain}/{chunk}"
+        js = http_get(url) or []
+        if isinstance(js, list):
+            out.extend(js)
+        elif isinstance(js, dict) and isinstance(js.get("pairs"), list):
+            out.extend(js["pairs"])
+
+    # Dedup by pair address
+    seen = set()
+    uniq = []
+    for p in out:
+        pid = p.get("pairAddress") or p.get("pairId") or p.get("address")
+        if pid and pid not in seen:
+            seen.add(pid)
+            uniq.append(p)
+    return uniq
+
+def boosted_addresses_by_chain() -> Dict[str, List[str]]:
+    toks = fetch_dexscreener_token_boosts_symbols()
+    out: Dict[str, List[str]] = {}
+    for t in toks:
+        ch = (t.get("chainId") or "").lower()
+        addr = (t.get("tokenAddress") or "").lower()
+        if ch and addr:
+            out.setdefault(ch, []).append(addr)
     return out
 
 # ------------------------ dex expansion & boosts ----------------------- #
@@ -335,7 +377,7 @@ def apply_quality_gates(
         oq = set(q.upper().strip() for q in only_quotes if q.strip())
         if oq:
             x = x[x["quote_symbol"].isin(oq)]
-            audit(x, "after only_quotes", debug)
+        audit(x, "after only_quotes", debug)
 
     # meme-only
     if meme_only:
@@ -451,7 +493,6 @@ def seed_symbols(args) -> List[str]:
 
     # Prioritize the freshest
     boosted = fetch_dexscreener_token_boosts_symbols()
-    # Use their symbols directly as seeds
     seeds += [t["symbol"] for t in boosted if t.get("symbol")]
 
     seeds += fetch_dexscreener_token_profiles_latest(limit=min(200, args.seed_boosts_limit))
@@ -477,27 +518,51 @@ def expand_pairs_from_seeds(seeds: List[str], per_symbol: int) -> List[dict]:
 def earlyize(args):
     if not args.early_mode:
         return args
-    # 0–60 minutes window
+    # strict birth window
     args.age_min = 0
-    args.age_max = 1.0  # hours
-    # keep liquidity modest (avoid matured)
-    if args.max_liquidity is None or args.max_liquidity > 120_000:
-        args.max_liquidity = 120_000
-    # immediate activity
-    args.min_txns5m = max(int(args.min_txns5m or 0), 3)
-    args.min_buys5m = max(float(args.min_buys5m or 0), 0.65)
-    # higher turnover in tiny-liq regime
-    args.min_turnover_ratio = max(float(args.min_turnover_ratio or 0), 0.01)
+    args.age_max = 1.0  # <= 60 min
+
+    # liquidity small; newborns can be tiny
+    if args.max_liquidity is None or args.max_liquidity > 150_000:
+        args.max_liquidity = 150_000
+    if args.min_liquidity is None or args.min_liquidity > 25_000:
+        args.min_liquidity = 10_000  # allow micro-liq
+
+    # activity: allow a trickle, then let score do the ranking
+    args.min_txns5m = max(int(args.min_txns5m or 0), 1)   # was ≥3
+    args.min_txns1h = max(int(args.min_txns1h or 0), 5)
+    args.min_buys5m = max(float(args.min_buys5m or 0), 0.60)
+
+    # turnover: keep light floor; don’t choke newborns
+    args.min_turnover_ratio = max(float(args.min_turnover_ratio or 0), 0.005)
+
+    # avoid hard volume floor right at birth
+    if getattr(args, "abs_vol24_floor", None) is not None and args.abs_vol24_floor > 0:
+        args.abs_vol24_floor = 0
+
     return args
 
 def run_once(args):
-    seeds = seed_symbols(args)
-    if not seeds:
-        print("[!] No seeds gathered; aborting.")
-        return
+    # ----- 1) Direct pools from boosted token addresses (minutes-fresh) -----
+    pairs_raw: List[dict] = []
+    by_chain = boosted_addresses_by_chain()
+    chains_filter = [c.strip().lower() for c in (args.chains or "").split(",") if c.strip()]
 
-    pairs_raw = expand_pairs_from_seeds(seeds, per_symbol=max(20, min(100, args.seed_boosts_limit)))
+    for ch, addrs in by_chain.items():
+        if chains_filter and ch not in chains_filter:
+            continue
+        pools = dexscreener_token_pairs_by_addresses(ch, addrs)
+        if pools:
+            pairs_raw.extend(pools)
+
+    # ----- 2) Symbol search expansion (still useful) -----
+    seeds = seed_symbols(args)
+    if seeds:
+        pairs_raw.extend(expand_pairs_from_seeds(seeds, per_symbol=max(50, min(100, args.seed_boosts_limit))))
+
+    # Build DF
     df = pd.DataFrame([normalize_pair(p) for p in pairs_raw if normalize_pair(p) is not None])
+
     if args.debug:
         print(f"[debug] seeds->pairs (raw): {len(df)} rows")
 
@@ -521,14 +586,13 @@ def run_once(args):
             print(df.head(12).to_string(index=False))
 
     # Apply gates
-    chains = [c.strip() for c in (args.chains or "").split(",") if c.strip()]
     only_quotes = [q.strip() for q in (args.only_quotes or "").split(",") if q.strip()]
     exclude_dex = [d.strip() for d in (args.exclude_dex or "").split(",") if d.strip()]
     meme_regex = args.meme_regex if args.meme_regex else None
 
     df = apply_quality_gates(
         df=df,
-        chains=chains,
+        chains=chains_filter,
         only_quotes=only_quotes,
         exclude_dex=exclude_dex,
         meme_only=args.meme_only,
