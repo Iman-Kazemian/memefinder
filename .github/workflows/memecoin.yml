@@ -20,7 +20,6 @@ jobs:
       CHAINS: "solana,base"
       ONLY_QUOTES: "USDC,SOL,WETH,USDT,USD1,VIRTUAL"
       TOP: "100"
-      # Secrets are set in repo settings → Actions → Secrets and variables → Actions
       TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
       TELEGRAM_CHAT:  ${{ secrets.TELEGRAM_CHAT }}
       BIRDEYE_API_KEY: ${{ secrets.BIRDEYE_API_KEY }}
@@ -54,13 +53,33 @@ jobs:
           python memecoin_previral.py \
             --chains "${CHAINS}" \
             --top "${TOP}" \
-            --early-mode \
-            --age-min 0 --age-max 20 \
-            --min-liquidity 12000 --max-liquidity 150000 \
-            --abs-vol24-floor 0 --min-turnover-ratio 0.012 \
-            --min-buys5m 0.65 --min-txns1h 8 --min-txns5m 2 \
+            \
+            # 🎯 age window: not newborn rugs, not fully exhausted
+            --age-min 0.3 --age-max 6 \
+            \
+            # 💧 stronger quality floors
+            --min-liquidity 30000 --max-liquidity 400000 \
+            --min-vol24 20000 \
+            --abs-vol24-floor 15000 \
+            --min-turnover-ratio 0.04 \
+            \
+            # 📈 sustained activity, not one spike
+            --min-buys5m 0.58 \
+            --min-txns1h 20 \
+            --min-txns5m 4 \
+            \
+            # keep your quote filter + dex exclusions
             --only-quotes "${ONLY_QUOTES}" \
             --exclude-dex "pumpswap" \
+            \
+            # optional but recommended to keep it on-brand
+            --meme-only \
+            \
+            # tighter alert gating (Telegram side)
+            --alert-threshold 0.60 \
+            --alert-accel 1.3 \
+            --alert-buys 0.65 \
+            \
             --debug | tee "runs/scan_${TS}.log"
 
       - name: Commit cooldown cache
